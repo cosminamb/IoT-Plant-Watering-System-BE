@@ -3,6 +3,8 @@ import requests
 from flask import Flask, jsonify, abort
 from flask_cors import CORS 
 import threading
+from datetime import datetime, timedelta
+import os
 
 
 app = Flask(__name__)
@@ -17,6 +19,7 @@ motor_topic = "home/raspberrypi/motor"
 temperature = None
 humidity = None
 client = None
+motor_start_file = "motor_last_started.txt"  # File to store the last motor start date
 
 @app.route('/api/motor/<command>', methods=['POST'])
 def action_motor(command):
@@ -55,12 +58,29 @@ def get_weather():
     if response.status_code == 200:
         data = response.json()
         daily_forecasts = data["DailyForecasts"]
-        print(daily_forecasts)
-        return daily_forecasts
+        #print(daily_forecasts)
+        return data
     else:
-        print("Failed to get weather forecast " + response)
+        print("Failed to get weather forecast ")
+        print(response)
         return []
 
+# Load the last motor start date from file (if exists)
+def load_motor_start_date():
+    if os.path.exists(motor_start_file):
+        with open(motor_start_file, 'r') as file:
+            date_str = file.read().strip()
+            if date_str:
+                return datetime.strptime(date_str, "%Y-%m-%d")
+    return None
+
+# Save the current date as the motor start date
+def save_motor_start_date():
+    with open(motor_start_file, 'w') as file:
+        file.write(datetime.now().strftime("%Y-%m-%d"))
+
+# Get the last motor start date
+last_motor_start = load_motor_start_date()
 
 def read_api_key(file_path):
     with open(file_path, 'r') as file:
@@ -77,7 +97,7 @@ def on_connect(client, userdata, flags, rc):
 
 def on_message(client, userdata, msg):
     #print(f"Message received: {msg.topic} {msg.payload.decode()}")
-    global temperature, humidity
+    global temperature, humidity, last_motor_start
     payload = msg.payload.decode()
 
     try:
@@ -86,14 +106,19 @@ def on_message(client, userdata, msg):
         humidity = float(hum_str.split(": ")[1].replace("%", ""))
         print(f"Stored Temperature: {temperature} C")
         print(f"Stored Humidity: {humidity} %")
-        if humidity <= 80:
+        if humidity <= 40:
             print("Humidity <= 40%: Checking weather forecast...")
             forecast = check_weather_forecast()
             if forecast:
                 print(f"It will rain in {forecast} days in Cluj-Napoca")
             else:
-                client.publish(motor_topic, "start_motor")
-                print("No rain in the next 3 days: Signal sent to start the motor")
+                if last_motor_start and (datetime.now() - last_motor_start < timedelta(days=5)):
+                    print(f"Plants have been watered on {last_motor_start.strftime('%Y-%m-%d')}.")
+                else:
+                    client.publish(motor_topic, "start_motor")
+                    save_motor_start_date() #save current date
+                    last_motor_start = datetime.now() # update last start
+                    print("No rain in the next 3 days: Signal sent to start the water pump")
     except Exception as e:
         print(f"Error parsing message: {e}")
     
@@ -107,7 +132,7 @@ def check_weather_forecast():
     if response.status_code == 200:
         data = response.json()
         daily_forecasts = data["DailyForecasts"]
-        print(daily_forecasts)
+        #print(daily_forecasts)
 
         # Check the next 3 days for rain
         for i in range(3):
@@ -118,8 +143,7 @@ def check_weather_forecast():
         # No rain in the next 3 days
         return None
     else:
-        print(response.status_code)
-        print(response)
+        #print(response)
         print("Failed to get weather forecast")
         return None
 
